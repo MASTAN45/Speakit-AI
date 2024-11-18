@@ -1,0 +1,216 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import pyttsx3
+import speech_recognition as sr
+from gtts import gTTS
+import pygame
+import os
+import json
+from textblob import TextBlob
+import threading
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+
+class AdvancedTTSApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("Advanced Speakit AI")
+        master.geometry("1000x700")
+        
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+        
+        # Initialize components
+        self.engine = pyttsx3.init()
+        self.recognizer = sr.Recognizer()
+        pygame.mixer.init()
+        
+        # Load emotion detection model
+        self.emotion_pipeline = pipeline("text-classification", model="distilbert-base-uncased-finetuned-sst-2-english")
+        
+        # Initialize chatbot (using a simple rule-based approach for demonstration)
+        self.chatbot_responses = {
+            "hello": "Hello! How can I assist you today?",
+            "how are you": "I'm functioning well, thank you. How about you?",
+            "bye": "Goodbye! Have a great day!",
+        }
+        
+        self.setup_ui()
+        self.load_voices()
+        self.load_languages()
+
+    def setup_ui(self):
+        # Configure colors
+        bg_color = "#2C3E50"
+        fg_color = "#ECF0F1"
+        accent_color = "#3498DB"
+        
+        self.master.configure(bg=bg_color)
+        
+        # Create a canvas for the background
+        self.canvas = tk.Canvas(self.master, bg=bg_color, highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Add "Speakit AI" text to the background
+        self.canvas.create_text(500, 30, text="Speakit AI", font=("Arial", 36, "bold"), fill=accent_color)
+        
+        # Create a frame for the content
+        content_frame = ttk.Frame(self.canvas, style="TFrame")
+        self.canvas.create_window(500, 380, window=content_frame, anchor="center", width=950, height=650)
+        
+        # Configure styles
+        self.style.configure("TFrame", background=bg_color)
+        self.style.configure("TLabel", background=bg_color, foreground=fg_color, font=("Arial", 12))
+        self.style.configure("TButton", background=accent_color, foreground=fg_color, font=("Arial", 12))
+        self.style.map("TButton", background=[("active", "#2980B9")])
+        self.style.configure("TEntry", fieldbackground=fg_color, foreground=bg_color, font=("Arial", 12))
+        self.style.configure("TCombobox", fieldbackground=fg_color, foreground=bg_color, font=("Arial", 12))
+        self.style.configure("TScale", background=bg_color, troughcolor=accent_color)
+        
+        # Text input
+        self.text_label = ttk.Label(content_frame, text="Enter Text:")
+        self.text_label.grid(row=0, column=0, pady=10, padx=10, sticky="w")
+        self.text_entry = ttk.Entry(content_frame, width=80)
+        self.text_entry.grid(row=0, column=1, columnspan=3, pady=10, padx=10, sticky="we")
+
+        # Voice selection
+        self.voice_label = ttk.Label(content_frame, text="Select Voice:")
+        self.voice_label.grid(row=1, column=0, pady=10, padx=10, sticky="w")
+        self.voice_combobox = ttk.Combobox(content_frame, state="readonly", width=30)
+        self.voice_combobox.grid(row=1, column=1, pady=10, padx=10, sticky="we")
+
+        # Input Language selection
+        self.input_lang_label = ttk.Label(content_frame, text="Input Language:")
+        self.input_lang_label.grid(row=2, column=0, pady=10, padx=10, sticky="w")
+        self.input_lang_combobox = ttk.Combobox(content_frame, state="readonly", width=30)
+        self.input_lang_combobox.grid(row=2, column=1, pady=10, padx=10, sticky="we")
+
+        # Output Language selection
+        self.output_lang_label = ttk.Label(content_frame, text="Output Language:")
+        self.output_lang_label.grid(row=2, column=2, pady=10, padx=10, sticky="w")
+        self.output_lang_combobox = ttk.Combobox(content_frame, state="readonly", width=30)
+        self.output_lang_combobox.grid(row=2, column=3, pady=10, padx=10, sticky="we")
+
+        # Speech rate and pitch
+        self.rate_label = ttk.Label(content_frame, text="Speech Rate:")
+        self.rate_label.grid(row=3, column=0, pady=10, padx=10, sticky="w")
+        self.rate_slider = ttk.Scale(content_frame, from_=50, to=300, orient=tk.HORIZONTAL, length=200)
+        self.rate_slider.set(200)
+        self.rate_slider.grid(row=3, column=1, pady=10, padx=10, sticky="we")
+
+        self.pitch_label = ttk.Label(content_frame, text="Pitch:")
+        self.pitch_label.grid(row=3, column=2, pady=10, padx=10, sticky="w")
+        self.pitch_slider = ttk.Scale(content_frame, from_=0, to=2, orient=tk.HORIZONTAL, length=200)
+        self.pitch_slider.set(1)
+        self.pitch_slider.grid(row=3, column=3, pady=10, padx=10, sticky="we")
+
+        # Buttons
+        self.tts_button = ttk.Button(content_frame, text="Text-to-Speech", command=self.text_to_speech)
+        self.tts_button.grid(row=4, column=0, pady=10, padx=10, sticky="we")
+
+        self.stt_button = ttk.Button(content_frame, text="Speech-to-Text", command=self.speech_to_text)
+        self.stt_button.grid(row=4, column=1, pady=10, padx=10, sticky="we")
+
+        self.save_button = ttk.Button(content_frame, text="Save Audio", command=self.save_audio)
+        self.save_button.grid(row=4, column=2, pady=10, padx=10, sticky="we")
+
+        self.chat_button = ttk.Button(content_frame, text="Chat", command=self.chat)
+        self.chat_button.grid(row=4, column=3, pady=10, padx=10, sticky="we")
+
+        # Text highlighting and emotion display
+        self.highlight_text = tk.Text(content_frame, wrap=tk.WORD, width=80, height=10, bg=fg_color, fg=bg_color, font=("Arial", 12))
+        self.highlight_text.grid(row=5, column=0, columnspan=4, pady=10, padx=10, sticky="we")
+
+        self.emotion_label = ttk.Label(content_frame, text="Detected Emotion: ")
+        self.emotion_label.grid(row=6, column=0, columnspan=4, pady=10, padx=10, sticky="w")
+
+        # Bookmarks and annotations
+        self.bookmark_button = ttk.Button(content_frame, text="Add Bookmark", command=self.add_bookmark)
+        self.bookmark_button.grid(row=7, column=0, columnspan=4, pady=10, padx=10, sticky="we")
+
+        self.bookmarks_listbox = tk.Listbox(content_frame, width=80, bg=fg_color, fg=bg_color, font=("Arial", 12))
+        self.bookmarks_listbox.grid(row=8, column=0, columnspan=4, pady=10, padx=10, sticky="we")
+
+    def load_voices(self):
+        voices = self.engine.getProperty('voices')
+        self.voice_combobox['values'] = [voice.name for voice in voices]
+        self.voice_combobox.set(voices[0].name)
+
+    def load_languages(self):
+        languages = ["Eng", "Hin", "Tel", "de", "it", "ja", "ko", "zh"]  # Example languages
+        self.input_lang_combobox['values'] = languages
+        self.input_lang_combobox.set(languages[0])
+        self.output_lang_combobox['values'] = languages
+        self.output_lang_combobox.set(languages[0])
+
+    def text_to_speech(self):
+        text = self.text_entry.get()
+        if text:
+            self.engine.setProperty('rate', self.rate_slider.get())
+            self.engine.setProperty('pitch', self.pitch_slider.get())
+            
+            selected_voice = self.voice_combobox.get()
+            voices = self.engine.getProperty('voices')
+            for voice in voices:
+                if voice.name == selected_voice:
+                    self.engine.setProperty('voice', voice.id)
+                    break
+            
+            threading.Thread(target=self.engine.say, args=(text,)).start()
+            self.engine.runAndWait()
+            self.detect_emotion(text)
+        else:
+            messagebox.showwarning("Warning", "Please enter some text to speak.")
+
+    def speech_to_text(self):
+        with sr.Microphone() as source:
+            self.recognizer.adjust_for_ambient_noise(source)
+            audio = self.recognizer.listen(source)
+        
+        try:
+            text = self.recognizer.recognize_google(audio, language=self.input_lang_combobox.get())
+            self.text_entry.delete(0, tk.END)
+            self.text_entry.insert(0, text)
+            self.highlight_text.delete(1.0, tk.END)
+            self.highlight_text.insert(tk.END, text)
+            self.detect_emotion(text)
+        except sr.UnknownValueError:
+            messagebox.showerror("Error", "Speech recognition could not understand audio")
+        except sr.RequestError as e:
+            messagebox.showerror("Error", f"Could not request results from speech recognition service; {e}")
+
+    def save_audio(self):
+        text = self.text_entry.get()
+        if text:
+            file_path = filedialog.asksaveasfilename(defaultextension=".mp3")
+            if file_path:
+                tts = gTTS(text=text, lang=self.output_lang_combobox.get())
+                tts.save(file_path)
+                messagebox.showinfo("Success", f"Audio saved to {file_path}")
+        else:
+            messagebox.showwarning("Warning", "Please enter some text to save as audio.")
+
+    def add_bookmark(self):
+        selected_text = self.highlight_text.get(tk.SEL_FIRST, tk.SEL_LAST)
+        if selected_text:
+            self.bookmarks_listbox.insert(tk.END, selected_text)
+        else:
+            messagebox.showwarning("Warning", "Please select text to bookmark.")
+
+    def detect_emotion(self, text):
+        result = self.emotion_pipeline(text)[0]
+        emotion = result['label']
+        confidence = result['score']
+        self.emotion_label.config(text=f"Detected Emotion: {emotion} (Confidence: {confidence:.2f})")
+
+    def chat(self):
+        user_input = self.text_entry.get().lower()
+        response = self.chatbot_responses.get(user_input, "Hello! How Can I Assist You Today?")
+        self.highlight_text.insert(tk.END, f"You: {user_input}\n")
+        self.highlight_text.insert(tk.END, f"AI: {response}\n\n")
+        self.text_entry.delete(0, tk.END)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AdvancedTTSApp(root)
+    root.mainloop()
